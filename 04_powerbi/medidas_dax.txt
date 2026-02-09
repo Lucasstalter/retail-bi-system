@@ -1,0 +1,320 @@
+/*
+=================================================================
+MEDIDAS DAX - SISTEMA BI VAREJO
+Autor: Lucas
+Descrição: Medidas completas para dashboards Power BI
+=================================================================
+*/
+
+// ==================== RECEITA E VENDAS ====================
+
+Receita_Total = 
+SUMX(
+    Fato_Vendas,
+    Fato_Vendas[Quantidade] * Fato_Vendas[Valor_Unitario]
+)
+
+Receita_Liquida = 
+SUMX(
+    Fato_Vendas,
+    (Fato_Vendas[Quantidade] * Fato_Vendas[Valor_Unitario]) - 
+    (Fato_Vendas[Quantidade] * Fato_Vendas[Valor_Unitario] * Fato_Vendas[Desconto])
+)
+
+Custo_Total = 
+SUMX(
+    Fato_Vendas,
+    Fato_Vendas[Quantidade] * Fato_Vendas[Custo_Unitario]
+)
+
+Lucro_Bruto = [Receita_Liquida] - [Custo_Total]
+
+Margem_Bruta = DIVIDE([Lucro_Bruto], [Receita_Liquida], 0)
+
+Ticket_Medio = DIVIDE([Receita_Total], DISTINCTCOUNT(Fato_Vendas[ID_Venda]), 0)
+
+Qtd_Vendas = COUNTROWS(Fato_Vendas)
+
+// ==================== TIME INTELLIGENCE ====================
+
+Receita_Mes_Anterior = 
+CALCULATE(
+    [Receita_Total],
+    DATEADD(Dim_Tempo[Data], -1, MONTH)
+)
+
+Receita_Ano_Anterior = 
+CALCULATE(
+    [Receita_Total],
+    SAMEPERIODLASTYEAR(Dim_Tempo[Data])
+)
+
+Crescimento_MoM = 
+VAR ReceitaAtual = [Receita_Total]
+VAR ReceitaAnterior = [Receita_Mes_Anterior]
+RETURN
+    DIVIDE(ReceitaAtual - ReceitaAnterior, ReceitaAnterior, 0)
+
+Crescimento_YoY = 
+VAR ReceitaAtual = [Receita_Total]
+VAR ReceitaAnoPassado = [Receita_Ano_Anterior]
+RETURN
+    DIVIDE(ReceitaAtual - ReceitaAnoPassado, ReceitaAnoPassado, 0)
+
+Receita_YTD = 
+CALCULATE(
+    [Receita_Total],
+    DATESYTD(Dim_Tempo[Data])
+)
+
+Receita_Acumulada = 
+CALCULATE(
+    [Receita_Total],
+    FILTER(
+        ALL(Dim_Tempo[Data]),
+        Dim_Tempo[Data] <= MAX(Dim_Tempo[Data])
+    )
+)
+
+// ==================== CLIENTES ====================
+
+Qtd_Clientes_Ativos = 
+CALCULATE(
+    DISTINCTCOUNT(Fato_Vendas[ID_Cliente]),
+    Dim_Cliente[Status] = "Ativo"
+)
+
+Receita_Por_Cliente = 
+DIVIDE([Receita_Total], [Qtd_Clientes_Ativos], 0)
+
+Clientes_Novos = 
+CALCULATE(
+    DISTINCTCOUNT(Fato_Vendas[ID_Cliente]),
+    FILTER(
+        Dim_Cliente,
+        Dim_Cliente[Data_Cadastro] >= DATE(YEAR(TODAY()), MONTH(TODAY()), 1) &&
+        Dim_Cliente[Data_Cadastro] <= TODAY()
+    )
+)
+
+Taxa_Retencao = 
+VAR ClientesMesAnterior = 
+    CALCULATE(
+        DISTINCTCOUNT(Fato_Vendas[ID_Cliente]),
+        DATEADD(Dim_Tempo[Data], -1, MONTH)
+    )
+VAR ClientesRetidos = 
+    CALCULATE(
+        DISTINCTCOUNT(Fato_Vendas[ID_Cliente]),
+        FILTER(
+            ALL(Dim_Tempo),
+            Dim_Tempo[Data] >= DATE(YEAR(TODAY()), MONTH(TODAY())-1, 1) &&
+            Dim_Tempo[Data] <= EOMONTH(DATE(YEAR(TODAY()), MONTH(TODAY())-1, 1), 0)
+        )
+    )
+RETURN
+    DIVIDE(ClientesRetidos, ClientesMesAnterior, 0)
+
+// ==================== ANÁLISE ABC ====================
+
+Curva_ABC_Produto = 
+VAR ReceitaProduto = [Receita_Total]
+VAR ReceitaTotal = 
+    CALCULATE(
+        [Receita_Total],
+        ALL(Dim_Produto)
+    )
+VAR PercReceita = DIVIDE(ReceitaProduto, ReceitaTotal, 0)
+VAR ReceitaAcumulada = 
+    CALCULATE(
+        [Receita_Total],
+        FILTER(
+            ALL(Dim_Produto),
+            [Receita_Total] >= ReceitaProduto
+        )
+    )
+VAR PercAcumulado = DIVIDE(ReceitaAcumulada, ReceitaTotal, 0)
+RETURN
+    SWITCH(
+        TRUE(),
+        PercAcumulado <= 0.80, "A - 80%",
+        PercAcumulado <= 0.95, "B - 15%",
+        "C - 5%"
+    )
+
+// ==================== METAS ====================
+
+Meta_Mensal = SUM(Dim_Vendedor[Meta_Mensal])
+
+Atingimento_Meta = DIVIDE([Receita_Total], [Meta_Mensal], 0)
+
+Status_Meta = 
+SWITCH(
+    TRUE(),
+    [Atingimento_Meta] >= 1, "✅ Meta Atingida",
+    [Atingimento_Meta] >= 0.90, "⚠️ Próximo da Meta",
+    "❌ Abaixo da Meta"
+)
+
+// ==================== FORECASTING ====================
+
+Previsao_Vendas_Proximos_30_Dias = 
+VAR Hoje = TODAY()
+VAR Dias30Atras = Hoje - 30
+VAR MediaDiaria = 
+    CALCULATE(
+        AVERAGEX(
+            VALUES(Dim_Tempo[Data]),
+            [Receita_Total]
+        ),
+        Dim_Tempo[Data] >= Dias30Atras && Dim_Tempo[Data] <= Hoje
+    )
+RETURN
+    MediaDiaria * 30
+
+Tendencia_Linear = 
+VAR Tabela = 
+    ADDCOLUMNS(
+        FILTER(
+            VALUES(Dim_Tempo[Data]),
+            Dim_Tempo[Data] <= MAX(Dim_Tempo[Data])
+        ),
+        "X", DATEDIFF(MIN(Dim_Tempo[Data]), Dim_Tempo[Data], DAY),
+        "Y", [Receita_Total]
+    )
+VAR N = COUNTROWS(Tabela)
+VAR SomaX = SUMX(Tabela, [X])
+VAR SomaY = SUMX(Tabela, [Y])
+VAR SomaXY = SUMX(Tabela, [X] * [Y])
+VAR SomaX2 = SUMX(Tabela, [X] * [X])
+VAR Slope = DIVIDE((N * SomaXY) - (SomaX * SomaY), (N * SomaX2) - (SomaX * SomaX))
+VAR Intercept = DIVIDE(SomaY - (Slope * SomaX), N)
+VAR DiasDesdeInicio = DATEDIFF(MIN(Dim_Tempo[Data]), MAX(Dim_Tempo[Data]), DAY)
+RETURN
+    (Slope * DiasDesdeInicio) + Intercept
+
+// ==================== DESCONTOS ====================
+
+Taxa_Desconto_Media = AVERAGEX(Fato_Vendas, Fato_Vendas[Desconto])
+
+Receita_Perdida_Desconto = 
+SUMX(
+    Fato_Vendas,
+    (Fato_Vendas[Quantidade] * Fato_Vendas[Valor_Unitario]) * Fato_Vendas[Desconto]
+)
+
+// ==================== PRODUTOS ====================
+
+Giro_Estoque = 
+VAR CustoVendido = [Custo_Total]
+VAR EstoqueMedio = 
+    CALCULATE(
+        AVERAGE(Fato_Estoque[Valor_Estoque]),
+        ALL(Dim_Tempo)
+    )
+RETURN
+    DIVIDE(CustoVendido, EstoqueMedio, 0)
+
+Dias_Estoque = DIVIDE(365, [Giro_Estoque], 0)
+
+// ==================== FORMATAÇÃO CONDICIONAL ====================
+
+Cor_Crescimento = 
+SWITCH(
+    TRUE(),
+    [Crescimento_MoM] > 0, "Verde",
+    [Crescimento_MoM] < 0, "Vermelho",
+    "Cinza"
+)
+
+Icone_Tendencia = 
+SWITCH(
+    TRUE(),
+    [Crescimento_MoM] > 0.05, "▲",
+    [Crescimento_MoM] < -0.05, "▼",
+    "►"
+)
+
+// ==================== RANKINGS ====================
+
+Ranking_Produto_Por_Receita = 
+RANKX(
+    ALL(Dim_Produto[Nome_Produto]),
+    [Receita_Total],
+    ,
+    DESC,
+    DENSE
+)
+
+Top_10_Produtos = 
+IF(
+    [Ranking_Produto_Por_Receita] <= 10,
+    Dim_Produto[Nome_Produto],
+    "Outros"
+)
+
+// ==================== COHORT ANALYSIS ====================
+
+Mes_Primeira_Compra = 
+CALCULATE(
+    MIN(Fato_Vendas[Data_Venda]),
+    ALLEXCEPT(Fato_Vendas, Fato_Vendas[ID_Cliente])
+)
+
+Cohort_Index = 
+VAR MesPrimeiraCompra = [Mes_Primeira_Compra]
+VAR MesAtual = MAX(Fato_Vendas[Data_Venda])
+RETURN
+    DATEDIFF(MesPrimeiraCompra, MesAtual, MONTH)
+
+// ==================== CLV (CUSTOMER LIFETIME VALUE) ====================
+
+CLV_Cliente = 
+VAR ReceitaCliente = 
+    CALCULATE(
+        [Receita_Liquida],
+        ALLEXCEPT(Fato_Vendas, Fato_Vendas[ID_Cliente])
+    )
+VAR FrequenciaCompra = 
+    CALCULATE(
+        DISTINCTCOUNT(Fato_Vendas[Data_Venda]),
+        ALLEXCEPT(Fato_Vendas, Fato_Vendas[ID_Cliente])
+    )
+VAR TicketMedioCliente = DIVIDE(ReceitaCliente, FrequenciaCompra, 0)
+VAR TaxaRecompra = 0.3  // Assumir 30%
+VAR VidaUtilMeses = 24  // 2 anos
+RETURN
+    TicketMedioCliente * FrequenciaCompra * TaxaRecompra * VidaUtilMeses
+
+// ==================== SAZONALIDADE ====================
+
+Indice_Sazonalidade = 
+VAR ReceitaMesAtual = [Receita_Total]
+VAR MediaAnual = 
+    CALCULATE(
+        AVERAGEX(
+            VALUES(Dim_Tempo[Mes]),
+            [Receita_Total]
+        ),
+        ALL(Dim_Tempo)
+    )
+RETURN
+    DIVIDE(ReceitaMesAtual, MediaAnual, 0)
+
+/*
+=================================================================
+NOTAS DE USO:
+
+1. Importar estas medidas no Power BI usando "Nova Medida"
+2. Organizar em pastas: Vendas, Clientes, Produtos, Análises
+3. Aplicar formatação adequada (%, R$, números)
+4. Usar em KPIs, gráficos e tabelas
+
+PERFORMANCE:
+- Evitar uso excessivo de ALL() em tabelas grandes
+- Preferir SUMX ao invés de loops complexos
+- Usar variáveis (VAR) para cálculos intermediários
+- Testar com DAX Studio para otimização
+
+=================================================================
+*/
